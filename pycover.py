@@ -57,6 +57,7 @@ class CoverImage(object):
         self.__old_size = self.__image.size
         self.__calculate_new_size()
         self.__image = self.__image.resize(self.__new_size, Image.ANTIALIAS)
+        self.path = os.path.dirname(path)
 
     def open_stream(self, stream):
         try:
@@ -87,7 +88,7 @@ class CoverImage(object):
 
     @property
     def path(self):
-        return self._path
+        return self.__path
 
     @path.setter
     def path(self, val):
@@ -174,7 +175,7 @@ class CoverFrame(wx.Frame):
         """
 
         wx.Frame.__init__(self, None, id=wx.ID_ANY, title='PyCover', pos=wx.DefaultPosition,
-                          size=(wx.Size(685, 600)), style=wx.DEFAULT_FRAME_STYLE | wx.TAB_TRAVERSAL)
+                          size=(wx.Size(685, 615)), style=wx.DEFAULT_FRAME_STYLE | wx.TAB_TRAVERSAL)
 
         loc = wx.IconLocation(r'C:\Python27\python.exe', 0)
         self.SetIcon(wx.IconFromLocation(loc))
@@ -210,6 +211,17 @@ class CoverFrame(wx.Frame):
         bSizer1.Add(self.__panel1, 1, wx.EXPAND | wx.ALL, 5)
 
         self.SetSizer(bSizer1)
+
+        # statusBar = wx.StatusBar(self, wx.ID_ANY, pos, size, style, name)
+        # sb1 = wx.StatusBar(self, id=wx.ID_ANY, size=(0,300), name='path')
+        self.__status_bar = self.CreateStatusBar(2)
+        """
+        http://xoomer.virgilio.it/infinity77/wxPython/Widgets/wx.StatusBar.html#SetStatusStyles
+        """
+        self.__status_bar.SetStatusWidths([40, -1])
+        # self.__status_bar.SetStatusStyles([wx.SB_NORMAL, wx.SB_RAISED, wx.SB_NORMAL, wx.SB_RAISED])
+        self.__status_bar.SetStatusText(' Path:', 0)
+
         self.Layout()
 
     def show_new_image(self, image):
@@ -222,6 +234,9 @@ class CoverFrame(wx.Frame):
 
         #def SetNewImage(self, path):
         #    pass
+
+    def set_path_sb(self, path):
+        self.__status_bar.SetStatusText(path, 1)
 
 
 class CoverApp(wx.App):
@@ -267,7 +282,7 @@ class CoverApp(wx.App):
 
         ih = ImageHeader(bar)
         if not ih.is_supported():
-            print 'ERR: Unsupported content!'
+            #print 'ERR: Unsupported content!'
             self.__on_dir(os.path.dirname(path))
             return
 
@@ -279,11 +294,13 @@ class CoverApp(wx.App):
         self.__cleanup_frame()
         assert isinstance(self.image, CoverImage)
         self.frame.show_new_image(self.image)
+        self.frame.set_path_sb(self.image.path)
 
     def __on_dir(self, path):
         if self.image:
             self.image.path = path
 
+            self.frame.set_path_sb(self.image.path)
             #notify status bar about new path
 
     def __on_url(self, url):
@@ -329,7 +346,7 @@ class CoverApp(wx.App):
         self.frame.show_new_image(self.image)
 
     def __cleanup_frame(self):
-        '''TODO: cleanup UI, there will be new image'''
+        """TODO: cleanup UI, there will be new image"""
         # def save(self):          #
         #     # i = image.tobytes("jpeg", "RGB")
         #     # print 'size: ', len(i)
