@@ -3,18 +3,22 @@
 
 __author__ = 'Exter, BADDCAFE 2014'
 
-import wx
 import os.path
 import cStringIO as StringIO
 import shutil
 import urllib2
 import urlparse
+
+import wx
 from wx.lib.newevent import NewCommandEvent
 from PIL import Image
+
 from droptarget import FTDropTarget as DropTarget
 
 
 CoverDropEvent, EVT_COVER_DROP_EVENT = NewCommandEvent()
+
+IMAGE_DOWNLOAD_LIMIT = 1024 * 1024
 
 
 class CoverImage(object):
@@ -26,10 +30,11 @@ class CoverImage(object):
     class ImgInf(object):
         def __init__(self):
             self.path = ''
-            self.dim = (0,0)
+            self.dim = (0, 0)
             self.size = 0
             self.saved = None
             self.path_in_use = None
+            self.format = None
 
     def __init__(self, path=None, stream=None):
         self.__initialized = False
@@ -48,8 +53,9 @@ class CoverImage(object):
         except:
             return
 
-        self.__src.size = os.path.getsize(path)/1024
+        self.__src.size = os.path.getsize(path) / 1024
         self.__src.path = path
+        self.__src.path_in_use = True
         self.path = os.path.dirname(path)
 
         self.__open_finalize()
@@ -61,7 +67,7 @@ class CoverImage(object):
             return
 
         stream.seek(0, os.SEEK_END)
-        self.__src.size = stream.tell()/1024
+        self.__src.size = stream.tell() / 1024
 
         self.__open_finalize()
 
@@ -74,7 +80,7 @@ class CoverImage(object):
         if not self.small:
             self.__image = self.__image.resize(self.dimensions, Image.ANTIALIAS)
 
-        self.__new.size = len(self.__jpg_data)/1024
+        self.__new.size = len(self.__jpg_data) / 1024
 
         self.__initialized = True
 
@@ -93,20 +99,22 @@ class CoverImage(object):
 
     def save(self):
         self.__image.save(self.path, 'jpeg')
-        # self.__image.close()
+        # self.__image.close() #TODO: check if needed?
         self.__new.saved = True
 
     @property
     def saved(self):
-         return self.__new.saved if hasattr(self.__new, 'saved') else False
+        return self.__new.saved if hasattr(self.__new, 'saved') else False
 
     @property
     def path(self):
         return self.__new.path
 
     @path.setter
-    def path(self, val):
-        self.__new.path = os.path.join(val, self.DEFAULT_NAME)
+    def path(self, directory):
+        if not os.path.exists(directory) or not os.path.isdir(directory):
+            raise AttributeError
+        self.__new.path = os.path.join(directory, self.DEFAULT_NAME)
         self.__new.path_in_use = os.path.exists(self.__new.path)
 
     @property
@@ -138,6 +146,14 @@ class CoverImage(object):
         return self.__new.size > self.__src.size or self.__new.size > 100
 
     @property
+    def compressed(self):
+        return self.__new.size < self.__src.size
+
+    @property
+    def resized(self):
+        return self.__new.dim < self.__src.dim
+
+    @property
     def src_inf(self):
         return self.__src.__dict__
 
@@ -145,11 +161,141 @@ class CoverImage(object):
     def new_inf(self):
         return self.__new.__dict__
 
+    def __evaluate_actions(self):
+        actions = ['BACKUP', 'SAVE', 'COPY']
+        action_detail = ''
+        action = ''
+        warning = ''
+        error = ''
+        is_warning = False
+        is_error = False
+        pass
+
+    # @property
+    # def same_file(self):
+    #     return self.__src.path == self.__new.path
+
+    # @property
+    # def src_has_path(self):
+    #     return self.__src.path_in_use #FIXME: change name?
+
+    # @property
+    # def new_has_path(self):
+    #     return
+
+    def get_action(self):
+        action = None
+
+        if not self.__new.path:
+            action = 'WARNING_NO_DESTINATION_PATH'
+            return action
+
+        if self.small:
+            if self.__new.path_in_use:
+                if self.__src.path == self.__new.path and self.compressed:
+                    action = 'SAVE  # (COMPRESS) !!!WARNING!!!'
+                else:
+                    action = 'ERROR_SMALL_INPUT_OUTPUT_IN_USE'
+            else:
+                if self.__src.path and self.__src.format == 'JPEG' and self.heavy:
+                    action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
+                else:
+                    action = 'SAVE  # (CONVERT&SAVE)'
+
+            return action
+
+        if self.heavy:
+            if self.__new.path_in_use:
+                if self.__src.path == self.__new.path and self.compressed:
+                    action = 'SAVE  # (COMPRESS) !!!WARNING!!!'
+                else:
+                    action = 'ERROR_HEAVY_INPUT_OUTPUT_IN_USE'
+            else:
+                if self.__src.path and self.__src.format == 'JPEG' and not self.compressed:
+                    action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
+                else:
+                    action = 'SAVE  # (CONVERT&SAVE)'
+            return action
+
+        if self.resized:
+            if self.__new.path_in_use:
+                if self.__src.path == self.__new.path:
+                    action = 'BACKUP&SAVE  # (BACKUP & RESIZE)or ??SAVE_ONLY?? (RESIZE)'
+                else:
+                    action = 'BACKUP&SAVE  # (BACKUP & RESIZE)!!!WARNING!!! ASK'
+            else:
+                action = 'SAVE # (RESIZE)'
+
+            return action
+
+        if self.compressed:
+            if self.__new.path_in_use:
+                if self.__src.path == self.__new.path:
+                    action = 'BACKUP&SAVE  # (BACKUP & COMPRESS) or ??COMPRESS_ONLY??'
+                else:
+                    action = 'BACKUP&SAVE  # (BACKUP & COMPRESS) !!!WARNING!!! ASK'
+            else:
+                action = 'SAVE  # (COMPRESS)'
+
+            return action
+
+        if self.__new.path_in_use:
+            if self.__src.path != self.__new.path:
+                action = 'ASK  # (BACKUP & COPY SOURCE TO DESTINATION WITH NEW NAME) !!!WARNING!!!'
+        else:
+            action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
+
+        return action
+
+    def get_action_2(self):
+        action = None
+        cover_status = 'OK/WARNING'
+        button_enabled = True
+
+
+        if self.__new.path:
+            if self.__new.path_in_use:
+                if self.small or self.heavy:
+                    if self.__src.path == self.__new.path:
+                        if self.compressed:
+                            action = 'SAVE  # (COMPRESS) !!!WARNING!!!'
+                        else:
+                            action = 'DO NOTHING'
+                    else:
+                        action = 'ERROR_&_INPUT_OUTPUT_IN_USE'
+                elif self.resized or self.compressed:
+                    if self.__src.path == self.__new.path:
+                        action = 'BACKUP&SAVE  # (BACKUP & RESIZE/COMPRESS) or ??COMPRESS_ONLY??'
+                    else:
+                        action = 'BACKUP&SAVE  # (BACKUP & RESIZE/COMPRESS) !!!WARNING!!! ASK'
+                else:
+                    if self.__src.path != self.__new.path:
+                        action = 'ASK  # (BACKUP & COPY SOURCE TO DESTINATION WITH NEW NAME) !!!WARNING!!!'
+                        button_enabled = False
+            else:
+                if self.small or self.heavy:
+                    if self.__src.path and self.__src.format == 'JPEG' and not self.compressed:
+                        action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
+                    else:
+                        action = 'SAVE  # (CONVERT&SAVE)'
+
+                elif self.resized or self.compressed:
+                    action = 'SAVE  # (RESIZE/COMPRESS)'
+
+                else:
+                    action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
+        else:
+            action = 'WARNING_NO_DESTINATION_PATH'
+            cover_status = '?'
+            button_enabled = False
+            warning = True
+            error = False
+
+        return action
 
 
 # FIXME: JPEG header checker
 class ImageHeader(object):
-
     def __init__(self, header):
         self.header = header
         self.type = ''
@@ -193,9 +339,9 @@ class ImageHeader(object):
         experimental
         """
         if self.header[0:4] == '\x4D\x4D\x00\x2A' or \
-                        self.header[0:4] == '\x4D\x4D\x00\x2B' or \
-                        self.header[0:4] == '\x49\x49\x2A\x00' or \
-                        self.header[0:3] == '\x49\x20\x49':
+                self.header[0:4] == '\x4D\x4D\x00\x2B' or \
+                self.header[0:4] == '\x49\x49\x2A\x00' or \
+                self.header[0:3] == '\x49\x20\x49':
             self.type = 'TIFF'
             return True
         else:
@@ -203,14 +349,58 @@ class ImageHeader(object):
 
     def is_supported(self):
         return self.__is_bmp() or \
-               self.__is_gif() or \
-               self.__is_jpeg() or \
-               self.__is_png() or \
-               self.__is_tiff()
+            self.__is_gif() or \
+            self.__is_jpeg() or \
+            self.__is_png() or \
+            self.__is_tiff()
+
+
+class CoverWXStaticBoxSizer(wx.StaticBoxSizer):
+    def __init__(self, parent, label):
+        wx.StaticBoxSizer.__init__(self, wx.StaticBox(parent, wx.ID_ANY, label), wx.VERTICAL)
+        self.__sb = self.GetStaticBox()
+
+        self.__dim_label = wx.StaticText(parent, wx.ID_ANY, u'Dimension:')
+        self.Add(self.__dim_label, 0, wx.ALL, 5)
+        self.__dim_value = wx.TextCtrl(parent, id=wx.ID_ANY, style=wx.TE_CENTER)
+        self.__dim_value.Enable(False)
+        self.Add(self.__dim_value, 0, wx.EXPAND)
+
+        self.__size_label = wx.StaticText(parent, wx.ID_ANY, u'Size:')
+        self.Add(self.__size_label, 0, wx.ALL, 5)
+        self.__size_value = wx.TextCtrl(parent, id=wx.ID_ANY, style=wx.TE_CENTER)
+        self.__size_value.Enable(False)
+        self.Add(self.__size_value, 0, wx.EXPAND)
+
+    def set_label(self, label):
+        self.__sb.SetLabel(label)
+
+    def alert_dimension(self, alert=True, colour=wx.RED):
+        self.__dim_label.SetForegroundColour(colour if alert else wx.BLACK)
+
+    def alert_size(self, alert=True, colour=wx.RED):
+        self.__size_label.SetForegroundColour(colour if alert else wx.BLACK)
+
+    def __clear_values(self):
+        self.__dim_value.Clear()
+        self.__size_value.Clear()
+
+    def __clear_alerts(self):
+        self.__dim_label.SetForegroundColour(wx.BLACK)
+        self.__size_label.SetForegroundColour(wx.BLACK)
+
+    def reset(self):
+        self.__clear_alerts()
+        self.__clear_values()
+
+    def set_dimension(self, dim):
+        self.__dim_value.SetValue('%dx%d px' % (dim[0], dim[1]))
+
+    def set_size(self, size):
+        self.__size_value.SetValue('%s KB' % size)
 
 
 class CoverFrame(wx.Frame):
-
     ID_BUTTON_SAVE = wx.NewId()
     ID_BUTTON_CLEAR = wx.NewId()
 
@@ -220,71 +410,58 @@ class CoverFrame(wx.Frame):
 
         self.SetBackgroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_3DSHADOW))
 
-        self.bs_main = wx.BoxSizer(wx.HORIZONTAL)
+        box_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         self.__bm_cover = wx.StaticBitmap(self, wx.ID_ANY, wx.NullBitmap, wx.DefaultPosition, wx.Size(550, 550),
-                                           wx.RAISED_BORDER)
+                                          wx.RAISED_BORDER)
         self.__bm_cover.SetToolTipString(u'...drop image here...')
         self.__bm_cover.SetDropTarget(DropTarget(wx.GetApp(), CoverDropEvent))
 
-        self.bs_main.Add(self.__bm_cover, 0, wx.ALL | wx.FIXED_MINSIZE, 5)
+        box_sizer.Add(self.__bm_cover, 0, wx.ALL | wx.FIXED_MINSIZE, 5)
 
-        self.__bs_right = wx.BoxSizer(wx.VERTICAL)
+        self.__sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # self.__button = wx.Button(self, wx.ID_ANY, u'Save', wx.DefaultPosition, wx.Size(100, -1), wx.NO_BORDER)
-        self.__button = wx.Button(self, self.ID_BUTTON_SAVE, u'Save', wx.DefaultPosition, wx.Size(100, -1), wx.NO_BORDER)
+        self.__button = wx.Button(self, wx.ID_ANY, wx.EmptyString, wx.DefaultPosition, wx.Size(100, -1), wx.NO_BORDER)
         self.__button.Enable(False)
-        self.__bs_right.Add(self.__button, 0, wx.CENTER, 0)
+        self.__sizer.Add(self.__button, 0, wx.CENTER, 0)
 
-        self.__bs_right.AddStretchSpacer(1)
-
-        self.__sbs1 = wx.StaticBoxSizer(wx.StaticBox(self, wx.ID_ANY, u'Source:'), wx.VERTICAL)
-        self.__sbs1_st1 = wx.StaticText(self, wx.ID_ANY, u'Dimension:')
-        self.__sbs1.Add(self.__sbs1_st1, 0, wx.ALL, 5)
-        self.__sbs1_tc1 = wx.TextCtrl(self, id=wx.ID_ANY, style=wx.TE_CENTER)
-        self.__sbs1_tc1.Enable(False)
-        self.__sbs1.Add(self.__sbs1_tc1, 0, wx.EXPAND)
-        self.__sbs1_st2 = wx.StaticText(self, wx.ID_ANY, u'Size:')
-        self.__sbs1.Add(self.__sbs1_st2, 0, wx.ALL, 5)
-        self.__sbs1_tc2 = wx.TextCtrl(self, id=wx.ID_ANY, style=wx.TE_CENTER)
-        self.__sbs1_tc2.Enable(False)
-        self.__sbs1.Add(self.__sbs1_tc2, 0, wx.EXPAND)
-        self.__bs_right.Add(self.__sbs1, 0, wx.EXPAND)
-
-        self.__sbs2 = wx.StaticBoxSizer(wx.StaticBox(self, wx.ID_ANY, u'Resize:'), wx.VERTICAL)
-        self.__sbs2_st1 = wx.StaticText(self, wx.ID_ANY, u'Dimension:')
-        self.__sbs2.Add(self.__sbs2_st1, 0, wx.ALL, 5)
-        self.__sbs2_tc1 = wx.TextCtrl(self, id=wx.ID_ANY, style=wx.TE_CENTER)
-        self.__sbs2_tc1.Enable(False)
-        self.__sbs2.Add(self.__sbs2_tc1, 0, wx.EXPAND)
-        self.__sbs2_st2 = wx.StaticText(self, wx.ID_ANY, u'Size:')
-        self.__sbs2.Add(self.__sbs2_st2, 0, wx.ALL, 5)
-        self.__sbs2_tc2 = wx.TextCtrl(self, id=wx.ID_ANY, style=wx.TE_CENTER)
-        self.__sbs2_tc2.Enable(False)
-        self.__sbs2.Add(self.__sbs2_tc2, 0, wx.EXPAND)
-        self.__bs_right.Add(self.__sbs2, 0, wx.EXPAND)
-
-        self.__bs_right.AddStretchSpacer(1)
-
+        self.__sizer.AddStretchSpacer(1)
         self.__bm_status = wx.StaticBitmap(self, wx.ID_ANY, wx.NullBitmap, wx.DefaultPosition, wx.Size(32, 32))
-        self.__bs_right.Add(self.__bm_status, 0, wx.CENTER | wx.ALL, 5)
+        self.__sizer.Add(self.__bm_status, 0, wx.CENTER | wx.ALL, 5)
 
-        self.bs_main.Add(self.__bs_right,0, wx.EXPAND | wx.ALL, 5)
-        self.SetSizer(self.bs_main)
+        self.__source_sbs = CoverWXStaticBoxSizer(self, u'Source:')
+        self.__sizer.Add(self.__source_sbs, 0, wx.EXPAND)
 
-        #TODO: http://xoomer.virgilio.it/infinity77/wxPython/Widgets/wx.StatusBar.html#SetStatusStyles
+        self.__new_sbs = CoverWXStaticBoxSizer(self, u'Resized:')
+        self.__sizer.Add(self.__new_sbs, 0, wx.EXPAND)
+
+        self.__output_sbs = CoverWXStaticBoxSizer(self, u'Output:')
+        self.__sizer.Add(self.__output_sbs, 0, wx.EXPAND)
+        self.__sizer.Hide(self.__output_sbs)
+
+        self.__sizer.AddStretchSpacer(2)
+
+        box_sizer.Add(self.__sizer, 0, wx.EXPAND | wx.ALL, 5)
+        self.SetSizer(box_sizer)
+
+        # TODO: http://xoomer.virgilio.it/infinity77/wxPython/Widgets/wx.StatusBar.html#SetStatusStyles
         self.__status_bar = self.CreateStatusBar(2)
         self.__status_bar.SetStatusWidths([40, -1])
 
-        self.Fit()
         self.Layout()
+        self.Fit()
+
+        self.__cl = None
 
     def show_new_image(self, image):
-        self.__sbs1_tc1.SetValue('%dx%d px' % image.src_inf['dim'])
-        self.__sbs1_tc2.SetValue('%s KB' % image.src_inf['size'])
+        if self.__cl:
+            self.__cl.Stop()
 
-        self.__sbs2_tc1.SetValue('%dx%d px' % image.new_inf['dim'])
-        self.__sbs2_tc2.SetValue('%s KB' % image.new_inf['size'])
+        self.__source_sbs.set_dimension(image.src_inf['dim'])
+        self.__source_sbs.set_size(image.src_inf['size'])
+
+        self.__new_sbs.set_dimension(image.new_inf['dim'])
+        self.__new_sbs.set_size(image.new_inf['size'])
 
         img = wx.EmptyImage(image.dimensions[0], image.dimensions[1])
         img.SetData(image.raw_data)
@@ -298,7 +475,7 @@ class CoverFrame(wx.Frame):
 
     def __show_notifications(self, image):
         button_enable = True
-        status_icon = wx.NullBitmap
+        status_icon = wx.Bitmap('./res/ok22.png', wx.BITMAP_TYPE_PNG)
 
         if image.path:
             msg = ' %s (%s)' % (image.path, 'IN USE' if image.path_in_use else 'NEW')
@@ -306,26 +483,31 @@ class CoverFrame(wx.Frame):
         else:
             self.__update_status(u'WARN:', u' Unknown path!')
             button_enable = False
-            status_icon = wx.ArtProvider.GetBitmap(wx.ART_WARNING)
+            # status_icon = wx.ArtProvider.GetBitmap(wx.ART_WARNING)
 
-        if image.small:
-            self.__sbs1_st1.SetForegroundColour(wx.RED)
-        else:
-            self.__sbs1_st1.SetForegroundColour(wx.BLACK)
-        if image.heavy:
-            self.__sbs2_st2.SetForegroundColour(wx.RED)
-        else:
-            self.__sbs2_st2.SetForegroundColour(wx.BLACK)
+        self.__source_sbs.alert_dimension(image.small)
+        self.__new_sbs.alert_dimension(image.small)
+        self.__new_sbs.alert_size(image.heavy)
 
         if image.small or image.heavy:
-            if image.path_in_use:
+            if image.path_in_use and not image.resized:
                 status_icon = wx.ArtProvider.GetBitmap(wx.ART_ERROR)
                 button_enable = False
             else:
                 status_icon = wx.ArtProvider.GetBitmap(wx.ART_WARNING)
 
         self.__bm_status.SetBitmap(status_icon)
-        self.__button.Enable(button_enable)
+        if button_enable:
+            self.__button.SetLabel(u'Save')
+            self.__button.SetId(self.ID_BUTTON_SAVE)
+            self.__button.Enable(True)
+        else:
+            self.__button.SetLabel(wx.EmptyString)
+            self.__button.SetId(wx.ID_ANY)
+            self.__button.Enable(False)
+
+        print image.get_action()
+        print image.get_action_2()
 
     def update_path(self, image):
         self.__show_notifications(image)
@@ -344,20 +526,50 @@ class CoverFrame(wx.Frame):
             self.__update_status(u'WARN:', u' Unknown path!')
 
     def status_error(self, msg):
-        # self.__update_status(u' ERR:', ' ' + msg)
-        print u'ERR: ', u' ' + msg
+        self.a1 = wx.EmptyString
+        self.a2 = wx.EmptyString
+        self.a3 = wx.NullBitmap
 
-    @property
-    def button(self):
-        return self.__button
+        if self.__cl and self.__cl.IsRunning():
+            self.__cl.Restart()
+        else:
+            self.a1 = self.__status_bar.GetStatusText(0)
+            self.a2 = self.__status_bar.GetStatusText(1)
+            self.a3 = self.__bm_status.GetBitmap()
+            self.__cl = wx.CallLater(4399, self.__status_error_finished)
 
-    # def __e_button(self):
-    #     # self.__button = wx.Button(self, wx.ID_ANY, u'Save', wx.DefaultPosition, wx.Size(100, -1), wx.NO_BORDER)
-    #     self.__button = wx.Button(self, self.ID_BUTTON_SAVE, wx.EmptyString, wx.DefaultPosition, wx.Size(100, -1), wx.NO_BORDER)
-    #     self.__button.Enable(False)
+        self.__bm_status.SetBitmap(wx.ArtProvider.GetBitmap(wx.ART_ERROR))
+        self.__update_status(u' ERR:', ' ' + msg)
+
+    def __status_error_finished(self):
+        self.__bm_status.SetBitmap(self.a3)
+        self.__update_status(self.a1, self.a2)
+        self.__cl.Stop()
+        self.__cl = None
 
     def show_output_image(self, path):
-        pass
+        img = wx.Image(path)
+        bmp = wx.BitmapFromImage(img, wx.BITMAP_TYPE_ANY)
+        self.__bm_cover.SetBitmap(bmp)
+        size = img.GetSize()
+
+        self.__button.Enable(True)
+        self.__button.SetId(self.ID_BUTTON_CLEAR)
+        self.__button.SetLabel(u'Reset')
+
+        self.__output_sbs.set_dimension(size)
+        self.__output_sbs.set_size((os.path.getsize(path) / 1024))
+        self.__sizer.Show(self.__output_sbs)
+
+        self.__sizer.Hide(self.__source_sbs)
+        self.__sizer.Hide(self.__new_sbs)
+
+        self.Fit()
+        self.Layout()
+
+    def reset(self):
+        self.Layout()
+        self.Fit()
 
 
 class CoverApp(wx.App):
@@ -372,9 +584,11 @@ class CoverApp(wx.App):
 
         # bind to drop events
         self.Bind(EVT_COVER_DROP_EVENT, self.__drop_handler)
-        self.Bind(wx.EVT_BUTTON, self.__on_button, self.frame.button)
+        self.Bind(wx.EVT_BUTTON, self.__on_button)
 
     def __drop_handler(self, evt):
+        self.frame.Raise()
+
         if evt.GetId() == DropTarget.ID_DROP_FILE:
             if len(evt.files) > 1:
                 self.frame.status_error(u'Drop one item only!')
@@ -439,7 +653,7 @@ class CoverApp(wx.App):
             content_length = int(req.info().getheader(u'Content-Length').strip())
         except AttributeError:
             content_length = 0
-        if content_length > 1024 * 1024:
+        if content_length > IMAGE_DOWNLOAD_LIMIT:
             req.close()
             self.frame.status_error(u'Content is to big! (>1MB)')
             return
@@ -451,7 +665,7 @@ class CoverApp(wx.App):
             self.frame.status_error(u'Unsupported content!')
             return
 
-        bar = bar + req.read(1024 * 1024 - 11)  # download at most 1MB
+        bar = bar + req.read(IMAGE_DOWNLOAD_LIMIT - 11)  # download at most 1MB
         eof = req.read(1)  # check if EOF was reached
         req.close()
         if eof != '':  # if not, then error
@@ -474,116 +688,36 @@ class CoverApp(wx.App):
         print 'do clean up ? here ?'
 
     def __on_button(self, evt):
-        if evt.GetId() == CoverFrame.ID_BUTTON_SAVE:
-            if self.image.small or self.image.heavy:
-                if not self.image.path_in_use:
-                    # if we have source file and it is JPEG file
-                    if os.path.exists(self.image.src_inf['path']) and self.image.src_inf['format'] == 'JPEG':
-                        # copy source file to new destination as cover.jpg
-                        shutil.copy2(self.image.src_inf['path'], self.image.path)
-                    else:
-                        self.image.save()
-            elif self.image.path_in_use:
-                dir = os.path.dirname(self.image.path)
-                backup = lambda x: os.path.join(dir,'cover-PyCoverBackup-%02d.jpg' % x)
-                for i in range(10):
-                    if not os.path.exists(os.path.join(dir, backup(i))): break
-                shutil.move(self.image.path, backup(i))  # backup original file
-                self.image.save()
-            else:
-                self.image.save()
+        print 'evt.GetId(): ', evt.GetId()
+
+        if evt.GetId() == CoverFrame.ID_BUTTON_CLEAR:
+            # self.frame.reset()
+            self.image = None
+            pass
+        elif evt.GetId() == CoverFrame.ID_BUTTON_SAVE:
+            # if self.image.small or self.image.heavy:
+            #     if not self.image.path_in_use:
+            #         # if we have source file and it is JPEG file
+            #         if os.path.exists(self.image.src_inf['path']) and self.image.src_inf['format'] == 'JPEG':
+            #             # copy source file to new destination as cover.jpg
+            #             shutil.copy2(self.image.src_inf['path'], self.image.path)
+            #         else:
+            #             self.image.save()
+            # elif self.image.path_in_use:
+            #     directory = os.path.dirname(self.image.path)
+            #     backup = lambda x: os.path.join(directory, 'cover-PyCoverBackup-%02d.jpg' % x)
+            #     for i in range(10):
+            #         if not os.path.exists(os.path.join(directory, backup(i))): break
+            #     shutil.move(self.image.path, backup(i))  # backup original file
+            #     self.image.save()
+            # else:
+            #     self.image.save()
 
             if self.image.saved:
                 self.frame.show_output_image(self.image.path)
 
-        elif evt.GetId() == CoverFrame.ID_BUTTON_CLEAR:
-           pass
-
-            # '''
-            # if heavy or small:
-            #     if not new.path_in_use:
-            #         if exists(src.path) and src.format == 'JPEG':
-            #             copy_file(src.path, new.path) # copy original file
-            #         else:
-            #             save_img(new.path) # convert to jpg file
-            # elif new.path_in_use:
-            #     backup(new.path)
-            #     save_img(new.path)
-            # else:
-            #     save_img(new.path)
-            #
-            # # if heavy:
-            # #     if exists(src.path):
-            # #         if new.path_in_use:
-            # #             save_img(new.path-PyCover-B)
-            # #         else:
-            # #             if src.format == 'JPEG':
-            # #                 copy_file(src.path, new.path)
-            # #             else:
-            # #                 save_img(new.path)
-            # #     else:
-            # #         if new.path_in_use:
-            # #             save_img(new.path-PyCover-B)
-            # #         else:
-            # #             save_img(new.path)
-            #
-            #
-            # if heavy and not new.path_in_use:
-            #     if exists(src.path):
-            #         copy_file(src.path, new.path_original_ext)
-            #     else:
-            #         save_img(new.path)
-            # if heavy and new.path_in_use:
-            #     if exists(src.path):
-            #         if src.path != new.path_original_ext:
-            #             copy_file(src.path, new.path_original_ext)
-            #         save_img(new.path-PyCover-B)
-            #         save_img(new.path-PyCover-PIL)
-            #     else:
-            #         save_img(new.path-PyCover-B)
-            #         save_img(new.path-PyCover-PIL)
-            #
-            #
-            # if dst.path_in_use:
-            #     back-up(dst.path)
-            # if dst.to_heavy:
-            #     copy(src.path, dst.path) # ?? no types might be different !!
-            # else:
-            #     save(dst.path)
-            #
-            # another approach
-            #
-            # if src.path == new.path:
-            #     pass
-            # else:
-            #     if new.path_in_use:
-            #         pass
-            #         #backup(new.path)
-            #
-            #     else:
-            #         if small and not heavy:
-            #             save_img(new.path)
-            #         elif small and heavy:
-            #             # copy(src.path,
-            #
-            # '''
-            # f = open(self.image.path, 'wb')
-            # f.write(self.image.__jpg_data)
-            # f.close()
-            # # def save(self):          #
-            # # # i = image.tobytes("jpeg", "RGB")
-            # #     # print 'size: ', len(i)
-            # #     # import binascii
-            # #     # print 'image[:12] ', binascii.hexlify( i[:12])
-            # #     # image.save(path+'tttt.jpg', "JPEG", quality=75)
-            # #     # f = open(path+'wwww.jpg', 'wb')
-            # #     # f.write(i)
-            # #     # f.close()
-            # print 'save'
-            # self.image.save_pil()
-
-    def reset_after_error(self):
-        pass
+                # elif evt.GetId() == CoverFrame.ID_BUTTON_CLEAR:
+                # print 'CoverFrame.ID_BUTTON_CLEAR'
 
 
 def main():
