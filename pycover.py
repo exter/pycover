@@ -5,9 +5,9 @@ __author__ = 'Exter, BADDCAFE 2014'
 
 import os.path
 import cStringIO as StringIO
-import shutil
 import urllib2
 import urlparse
+import shutil
 
 import wx
 from wx.lib.newevent import NewCommandEvent
@@ -15,17 +15,37 @@ from PIL import Image
 
 from droptarget import FTDropTarget as DropTarget
 
+import EnhancedStatusBar as ESB
+# import tools
+
 
 CoverDropEvent, EVT_COVER_DROP_EVENT = NewCommandEvent()
 
-IMAGE_DOWNLOAD_LIMIT = 1024 * 1024
+IMAGE_DOWNLOAD_LIMIT = 1024 * 1024  # 1MB
+COVER_MAX_SIZE = 100  # 100 KB
 
+#TODO: issue, when there is no action, source file is fine (size and weight) but resized image is bigger we see WARNING icon, it should be OK and only resized size alerted or something like that
 
 class CoverImage(object):
     MIN_DIM = (425, 425)  # minimal cover dimensions
     MAX_DIM = (550, 550)  # maximal cover dimensions
     DEF_DIM = (500, 500)  # default cover dimensions
     DEFAULT_NAME = "cover.jpg"
+
+    ACTION_BACKUP = 'BACKUP'
+    ACTION_COPY = 'COPY'
+    ACTION_SAVE = 'SAVE'
+    ACTION_RENAME = 'RENAME'
+
+    PATH_STATUS_ERROR = 'ERROR'
+    PATH_STATUS_OK = 'OK'
+    PATH_STATUS_WARNING = 'WARNING'
+
+    FILE_INFO_OK = 'OK'
+    FILE_INFO_SAME = 'SAME FIlE'
+    FILE_INFO_USED = 'IN USE'
+    FILE_INFO_NEW = 'NEW'
+    PATH_UNKNOWN = 'UNKNOWN'
 
     class ImgInf(object):
         def __init__(self):
@@ -36,11 +56,22 @@ class CoverImage(object):
             self.path_in_use = None
             self.format = None
 
+    class CAAD(object):  # Cover Actions and Data
+        def __init__(self):
+            self.actions = []
+            self.info = None
+            self.path_status = None
+            self.file_info = None
+            self.cover_src = None
+            self.cover_new = None
+
+
     def __init__(self, path=None, stream=None):
         self.__initialized = False
         self.__image = None
         self.__src = self.ImgInf()
         self.__new = self.ImgInf()
+        self.__data = self.CAAD()
 
         if path and not stream:
             self.__open_file(path)
@@ -53,10 +84,11 @@ class CoverImage(object):
         except:
             return
 
-        self.__src.size = os.path.getsize(path) / 1024
+        self.__src.size = os.path.getsize(path) / 1024  # Image size in KB
         self.__src.path = path
-        self.__src.path_in_use = True
-        self.path = os.path.dirname(path)
+
+        self.__new.path = os.path.join(os.path.dirname(path), self.DEFAULT_NAME)
+        self.__new.path_in_use = os.path.exists(self.__new.path)
 
         self.__open_finalize()
 
@@ -80,8 +112,9 @@ class CoverImage(object):
         if not self.small:
             self.__image = self.__image.resize(self.dimensions, Image.ANTIALIAS)
 
-        self.__new.size = len(self.__jpg_data) / 1024
+        self.__new.size = len(self.__image.tobytes('jpeg', 'RGB')) / 1024  # Image size in KB
 
+        self.__analyze()
         self.__initialized = True
 
     def __calculate_new_dim(self, old_dim):
@@ -97,10 +130,9 @@ class CoverImage(object):
 
         return new_dim
 
-    def save(self):
-        self.__image.save(self.path, 'jpeg')
-        # self.__image.close() #TODO: check if needed?
-        self.__new.saved = True
+    def close(self):
+        self.__image.close()  # TODO: check if needed?
+        # self.__new.saved = True
 
     @property
     def saved(self):
@@ -116,10 +148,7 @@ class CoverImage(object):
             raise AttributeError
         self.__new.path = os.path.join(directory, self.DEFAULT_NAME)
         self.__new.path_in_use = os.path.exists(self.__new.path)
-
-    @property
-    def path_in_use(self):
-        return self.__new.path_in_use if self.__new.path else False
+        self.__analyze()
 
     @property
     def dimensions(self):
@@ -128,10 +157,6 @@ class CoverImage(object):
     @property
     def raw_data(self):
         return self.__image.tobytes()
-
-    @property
-    def __jpg_data(self):
-        return self.__image.tobytes('jpeg', 'RGB')
 
     @property
     def ok(self):
@@ -143,7 +168,7 @@ class CoverImage(object):
 
     @property
     def heavy(self):
-        return self.__new.size > self.__src.size or self.__new.size > 100
+        return self.__new.size > self.__src.size or self.__new.size > COVER_MAX_SIZE
 
     @property
     def compressed(self):
@@ -155,143 +180,225 @@ class CoverImage(object):
 
     @property
     def src_inf(self):
-        return self.__src.__dict__
+        return {'dim': self.__src.dim, 'size': self.__src.size}
 
     @property
     def new_inf(self):
-        return self.__new.__dict__
+        return {'dim': self.__new.dim, 'size': self.__new.size}
 
-    def __evaluate_actions(self):
-        actions = ['BACKUP', 'SAVE', 'COPY']
-        action_detail = ''
-        action = ''
-        warning = ''
-        error = ''
-        is_warning = False
-        is_error = False
-        pass
+    @property
+    def __src_is_dst(self):
+        return self.__src.path.lower() == self.__new.path.lower()
 
-    # @property
-    # def same_file(self):
-    #     return self.__src.path == self.__new.path
-
-    # @property
-    # def src_has_path(self):
-    #     return self.__src.path_in_use #FIXME: change name?
-
-    # @property
-    # def new_has_path(self):
-    #     return
-
-    def get_action(self):
-        action = None
-
-        if not self.__new.path:
-            action = 'WARNING_NO_DESTINATION_PATH'
-            return action
-
-        if self.small:
-            if self.__new.path_in_use:
-                if self.__src.path == self.__new.path and self.compressed:
-                    action = 'SAVE  # (COMPRESS) !!!WARNING!!!'
-                else:
-                    action = 'ERROR_SMALL_INPUT_OUTPUT_IN_USE'
-            else:
-                if self.__src.path and self.__src.format == 'JPEG' and self.heavy:
-                    action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
-                else:
-                    action = 'SAVE  # (CONVERT&SAVE)'
-
-            return action
-
-        if self.heavy:
-            if self.__new.path_in_use:
-                if self.__src.path == self.__new.path and self.compressed:
-                    action = 'SAVE  # (COMPRESS) !!!WARNING!!!'
-                else:
-                    action = 'ERROR_HEAVY_INPUT_OUTPUT_IN_USE'
-            else:
-                if self.__src.path and self.__src.format == 'JPEG' and not self.compressed:
-                    action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
-                else:
-                    action = 'SAVE  # (CONVERT&SAVE)'
-            return action
-
-        if self.resized:
-            if self.__new.path_in_use:
-                if self.__src.path == self.__new.path:
-                    action = 'BACKUP&SAVE  # (BACKUP & RESIZE)or ??SAVE_ONLY?? (RESIZE)'
-                else:
-                    action = 'BACKUP&SAVE  # (BACKUP & RESIZE)!!!WARNING!!! ASK'
-            else:
-                action = 'SAVE # (RESIZE)'
-
-            return action
-
-        if self.compressed:
-            if self.__new.path_in_use:
-                if self.__src.path == self.__new.path:
-                    action = 'BACKUP&SAVE  # (BACKUP & COMPRESS) or ??COMPRESS_ONLY??'
-                else:
-                    action = 'BACKUP&SAVE  # (BACKUP & COMPRESS) !!!WARNING!!! ASK'
-            else:
-                action = 'SAVE  # (COMPRESS)'
-
-            return action
-
-        if self.__new.path_in_use:
-            if self.__src.path != self.__new.path:
-                action = 'ASK  # (BACKUP & COPY SOURCE TO DESTINATION WITH NEW NAME) !!!WARNING!!!'
-        else:
-            action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
-
-        return action
-
-    def get_action_2(self):
-        action = None
-        cover_status = 'OK/WARNING'
-        button_enabled = True
+    @property
+    def __renameable(self):
+        return self.__src_is_dst and self.__src.path != self.__new.path
 
 
+    @property
+    def actionable(self):
+        return len(self.__data.actions) > 0
+
+    def get_actions(self):
+        return self.__data.actions
+
+    def get_data(self):
+        return self.__data
+
+    def __analyze(self):
         if self.__new.path:
             if self.__new.path_in_use:
                 if self.small or self.heavy:
-                    if self.__src.path == self.__new.path:
+                    if self.__src_is_dst:
                         if self.compressed:
-                            action = 'SAVE  # (COMPRESS) !!!WARNING!!!'
+                            self.__data.actions = [self.ACTION_BACKUP, self.ACTION_SAVE]
+                            self.__data.info = 'COVER IS EITHER SMALL OR HEAVY BUT CAN BE COMPRESSED'
+                            self.__data.path_status = self.PATH_STATUS_OK
+                            self.__data.file_info = self.FILE_INFO_SAME
                         else:
-                            action = 'DO NOTHING'
+                            self.__data.actions = []
+                            self.__data.info = 'NOTHING TO DO SRC==DST, COVER IS EITHER SMALL OR HEAVY'
+                            self.__data.path_status = self.PATH_STATUS_OK
+                            self.__data.file_info = self.FILE_INFO_SAME
+                            # self.__data = {
+                            #     'actions': [],
+                            #     'info': 'NOTHING TO DO SRC==DST, COVER IS EITHER SMALL OR HEAVY',
+                            #     'status': 'OK',
+                            #     'path': self.CAAD.P_SAME,
+                            # }
                     else:
-                        action = 'ERROR_&_INPUT_OUTPUT_IN_USE'
+                        self.__data.actions = []
+                        self.__data.info = 'COVER IS EITHER SMALL OR HEAVY AND OUTPUT IS IN USE'
+                        self.__data.path_status = self.PATH_STATUS_ERROR
+                        self.__data.file_info = self.FILE_INFO_USED
+                        # self.__data = {
+                        #     'actions': [],
+                        #     'info': 'COVER IS EITHER SMALL OR HEAVY AND OUTPUT IS IN USE',
+                        #     'status': 'ERROR',
+                        #     'path': self.CAAD.P_USE,
+                        # }
                 elif self.resized or self.compressed:
-                    if self.__src.path == self.__new.path:
-                        action = 'BACKUP&SAVE  # (BACKUP & RESIZE/COMPRESS) or ??COMPRESS_ONLY??'
+                    if self.__src_is_dst:
+                        self.__data.actions = [self.ACTION_BACKUP, self.ACTION_SAVE]
+                        self.__data.info = 'COVER CAN BE RESIZED/COMPRESSED'
+                        self.__data.path_status = self.PATH_STATUS_OK
+                        self.__data.file_info = self.FILE_INFO_SAME
+                        # self.__data = {
+                        #     'actions': [self.CAAD.ACT_BACKUP, self.CAAD.ACT_SAVE],
+                        #     'info': 'COVER CAN BE RESIZED/COMPRESSED',
+                        #     'status': 'OK',
+                        #     'path': self.CAAD.P_SAME,
+                        # }
                     else:
-                        action = 'BACKUP&SAVE  # (BACKUP & RESIZE/COMPRESS) !!!WARNING!!! ASK'
+                        self.__data.actions = []
+                        self.__data.info = '?ASK? (BACKUP & RESIZE/COMPRESS) - UNSUPPORTED'
+                        self.__data.path_status = self.PATH_STATUS_ERROR
+                        self.__data.file_info = self.FILE_INFO_USED
+                        # self.__data = {
+                        #     'actions': [],
+                        #     'info': '?ASK? (BACKUP & RESIZE/COMPRESS) - UNSUPPORTED',
+                        #     'status': 'ERROR',
+                        #     'path': self.CAAD.P_USE,
+                        # }
                 else:
-                    if self.__src.path != self.__new.path:
-                        action = 'ASK  # (BACKUP & COPY SOURCE TO DESTINATION WITH NEW NAME) !!!WARNING!!!'
-                        button_enabled = False
+                    if self.__src_is_dst:
+                        if self.__renameable:
+                            self.__data.actions = [self.ACTION_RENAME]
+                            self.__data.info = 'COVER OK, RENAME FILE'
+                            self.__data.path_status = self.PATH_STATUS_OK
+                            self.__data.file_info = self.FILE_INFO_OK
+                            # self.__data = {
+                            #     'actions': [self.CAAD.ACT_RENAME],  #TODO: check if not to delete and save
+                            #     'info': 'COVER OK, RENAME FILE',
+                            #     'status': 'OK',
+                            #     'path': 'OK',
+                            # }
+                        else:
+                            self.__data.actions = []
+                            self.__data.info = 'COVER OK'
+                            self.__data.path_status = self.PATH_STATUS_OK
+                            self.__data.file_info = self.FILE_INFO_OK
+                            # self.__data = {
+                            #     'actions': [],  #TODO: check if not to delete and save
+                            #     'info': 'COVER OK',
+                            #     'status': 'OK',
+                            #     'path': 'OK',
+                            # }
+                    else:
+                        self.__data.actions = []
+                        self.__data.info = '?ASK? (BACKUP & COPY SOURCE TO DESTINATION WITH NEW NAME) - UNSUPPORTED'
+                        self.__data.path_status = self.PATH_STATUS_ERROR
+                        self.__data.file_info = self.FILE_INFO_USED
+                        # self.__data = {
+                        #     'actions': [],
+                        #     'info': '?ASK? (BACKUP & COPY SOURCE TO DESTINATION WITH NEW NAME) - UNSUPPORTED',
+                        #     'status': 'ERROR',
+                        #     'path': self.CAAD.P_USE,
+                        # }
             else:
                 if self.small or self.heavy:
                     if self.__src.path and self.__src.format == 'JPEG' and not self.compressed:
-                        action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
+                        self.__data.actions = [self.ACTION_COPY]
+                        self.__data.info = 'COPY SOURCE TO DESTINATION WITH NEW NAME'
+                        self.__data.path_status = self.PATH_STATUS_OK
+                        self.__data.file_info = self.FILE_INFO_NEW
+                        # self.__data = {
+                        #     'actions': [self.CAAD.ACT_COPY],
+                        #     'info': 'COPY SOURCE TO DESTINATION WITH NEW NAME',
+                        #     'status': 'OK',  # 'WARNING',
+                        #     'path': self.CAAD.P_NEW,
+                        # }
                     else:
-                        action = 'SAVE  # (CONVERT&SAVE)'
-
+                        self.__data.actions = [self.ACTION_SAVE]
+                        self.__data.info = 'CONVERT&SAVE'
+                        self.__data.path_status = self.PATH_STATUS_OK
+                        self.__data.file_info = self.FILE_INFO_NEW
+                        # self.__data = {
+                        #     'actions': [self.CAAD.ACT_SAVE],
+                        #     'info': 'CONVERT&SAVE',
+                        #     'status': 'OK',  # 'WARNING',
+                        #     'path': self.CAAD.P_NEW,
+                        # }
                 elif self.resized or self.compressed:
-                    action = 'SAVE  # (RESIZE/COMPRESS)'
-
+                    self.__data.actions = [self.ACTION_SAVE]
+                    self.__data.info = 'RESIZE/COMPRESS'
+                    self.__data.path_status = self.PATH_STATUS_OK
+                    self.__data.file_info = self.FILE_INFO_NEW
+                    # self.__data = {
+                    #     'actions': [self.CAAD.ACT_SAVE],
+                    #     'info': 'RESIZE/COMPRESS',
+                    #     'status': 'OK',
+                    #     'path': self.CAAD.P_NEW,
+                    # }
                 else:
-                    action = 'COPY  # (COPY SOURCE TO DESTINATION WITH NEW NAME)'
+                    if self.__src.path and self.__src.format == 'JPEG':
+                        self.__data.actions = [self.ACTION_COPY]
+                        self.__data.info = 'COPY SOURCE TO DESTINATION WITH NEW NAME'
+                        self.__data.path_status = self.PATH_STATUS_OK
+                        self.__data.file_info = self.FILE_INFO_NEW
+                        # self.__data = {
+                        #     'actions': [self.CAAD.ACT_COPY],
+                        #     'info': 'COPY SOURCE TO DESTINATION WITH NEW NAME',
+                        #     'status': 'OK',
+                        #     'path': self.CAAD.P_NEW,
+                        # }
+                    else:
+                        self.__data.actions = [self.ACTION_SAVE]
+                        self.__data.info = 'CONVERT&SAVE'
+                        self.__data.path_status = self.PATH_STATUS_OK
+                        self.__data.file_info = self.FILE_INFO_NEW
+                        # self.__data = {
+                        #     'actions': [self.CAAD.ACT_SAVE],
+                        #     'info': 'CONVERT&SAVE',
+                        #     'status': 'OK',
+                        #     'path': self.CAAD.P_NEW,
+                        # }
         else:
-            action = 'WARNING_NO_DESTINATION_PATH'
-            cover_status = '?'
-            button_enabled = False
-            warning = True
-            error = False
+            self.__data.actions = []
+            self.__data.info = 'NO DESTINATION PATH'
+            self.__data.path_status = self.PATH_STATUS_WARNING
+            self.__data.file_info = self.PATH_UNKNOWN
+            # self.__data = {
+            #     'actions': [],
+            #     'info': 'NO DESTINATION PATH',
+            #     'status': 'WARNING',
+            #     'path': self.CAAD.P_UKN
+            # }
 
-        return action
+        # self.__data.cover_new= self. if self.small or self.heavy else self.CAAD.ST_OK
+
+        return self.actionable
+
+    def execute_actions(self):
+        if not self.actionable:
+            return
+
+        for act in self.get_actions():
+            if act == self.ACTION_BACKUP:
+                directory = os.path.dirname(self.__new.path)
+                backup = lambda x: os.path.join(directory, 'cover-PyCoverBackup-%02d.jpg' % x)
+                i = 0
+                for i in range(10):
+                    if not os.path.exists(os.path.join(directory, backup(i))): break
+                shutil.move(self.__new.path, backup(i))  # backup original file
+                self.__new.saved = True
+            elif act == self.ACTION_COPY:
+                # copy source file to new destination as cover.jpg
+                shutil.copy2(self.__src.path, self.__new.path)
+                self.__new.saved = True
+            elif act == self.ACTION_SAVE:
+                self.__image.save(self.__new.path, 'jpeg')
+                self.__new.saved = True
+            elif act == self.ACTION_RENAME:  # TODO: check if not to delete and save
+                rename = self.__src.path + '.rename'
+                shutil.move(self.__src.path, rename)  # Cover.jpg -> Cover.jpg.rename
+                shutil.move(rename, self.__new.path)  # Cover.jpg.rename -> cover.jpg
+                self.__new.saved = True
+            else:
+                raise UserWarning
+
+        self.__image.close()
+        self.__new.saved = True
 
 
 # FIXME: JPEG header checker
@@ -339,9 +446,9 @@ class ImageHeader(object):
         experimental
         """
         if self.header[0:4] == '\x4D\x4D\x00\x2A' or \
-                self.header[0:4] == '\x4D\x4D\x00\x2B' or \
-                self.header[0:4] == '\x49\x49\x2A\x00' or \
-                self.header[0:3] == '\x49\x20\x49':
+                        self.header[0:4] == '\x4D\x4D\x00\x2B' or \
+                        self.header[0:4] == '\x49\x49\x2A\x00' or \
+                        self.header[0:3] == '\x49\x20\x49':
             self.type = 'TIFF'
             return True
         else:
@@ -349,10 +456,10 @@ class ImageHeader(object):
 
     def is_supported(self):
         return self.__is_bmp() or \
-            self.__is_gif() or \
-            self.__is_jpeg() or \
-            self.__is_png() or \
-            self.__is_tiff()
+               self.__is_gif() or \
+               self.__is_jpeg() or \
+               self.__is_png() or \
+               self.__is_tiff()
 
 
 class CoverWXStaticBoxSizer(wx.StaticBoxSizer):
@@ -400,6 +507,108 @@ class CoverWXStaticBoxSizer(wx.StaticBoxSizer):
         self.__size_value.SetValue('%s KB' % size)
 
 
+class CoverWXStatusBar(ESB.EnhancedStatusBar):
+    def __init__(self, parent):
+        ESB.EnhancedStatusBar.__init__(self, parent, style=wx.ST_DOTS_MIDDLE)
+        self.SetFieldsCount(3)
+        self.SetStatusWidths([50, -1, 125])
+
+        self.__bmp_ok = wx.Bitmap('./res/ok16.png', wx.BITMAP_TYPE_PNG)
+        self.__bmp_warning = wx.ArtProvider.GetBitmap(wx.ART_WARNING, wx.ART_TOOLBAR, (16, 16))
+        self.__bmp_error = wx.ArtProvider.GetBitmap(wx.ART_ERROR, wx.ART_TOOLBAR, (16, 16))
+        self.__bmp_tick = wx.ArtProvider.GetBitmap(wx.ART_TICK_MARK, wx.ART_TOOLBAR, (16, 16))
+
+        self.__status_bmp = wx.StaticBitmap(self, wx.ID_ANY, wx.NullBitmap)
+        self.AddWidget(self.__status_bmp)
+
+        panel = wx.Panel(self, wx.ID_ANY, style=wx.SUNKEN_BORDER)
+        self.__status_txt = wx.StaticText(panel, wx.ID_ANY, wx.EmptyString)
+        bs = wx.BoxSizer(wx.VERTICAL)
+        bs.AddStretchSpacer(1)
+        bs.Add(self.__status_txt, 0, wx.EXPAND, 0)
+        bs.AddStretchSpacer(1)
+        panel.SetSizer(bs)
+        self.AddWidget(panel, ESB.ESB_EXACT_FIT)
+
+        self.AddWidget(wx.Panel(self, wx.ID_ANY, style=wx.SUNKEN_BORDER), ESB.ESB_EXACT_FIT)  # RESERVED
+
+        self.__bck = [wx.NullBitmap, wx.EmptyString]
+        self.__error_status_lc = None
+
+    def path_status(self, img=None, path=''):
+        if img and path:
+            raise AttributeError
+
+        if img:
+            data = img.get_data()
+
+            # bmp = wx.NullBitmap
+            if data.path_status == CoverImage.PATH_STATUS_ERROR:
+                bmp = self.__bmp_error
+            elif data.path_status == CoverImage.PATH_STATUS_WARNING:
+                bmp = self.__bmp_warning
+            elif data.path_status == CoverImage.PATH_STATUS_OK:
+                bmp = self.__bmp_ok
+            else:
+                raise UserWarning
+
+            self.__status_bmp.SetBitmap(bmp)
+
+            path_info = u' PATH: %s%s'
+            file_info = ''
+            if data.file_info == CoverImage.FILE_INFO_OK:
+                # file_info = ''
+                pass
+            elif data.file_info == CoverImage.FILE_INFO_SAME:
+                if img.actionable:
+                    file_info = ' (*)'
+                # else:
+                #     file_info = ''
+            elif data.file_info == CoverImage.FILE_INFO_USED:
+                file_info = ' (IN USE)'
+            elif data.file_info == CoverImage.FILE_INFO_NEW:
+                file_info = ' (NEW)'
+            elif data.file_info == CoverImage.PATH_UNKNOWN:
+                path_info = u' WARNING: Unknown path!'
+            else:
+                raise UserWarning
+
+            self.__status_txt.SetLabel(path_info % (img.path, file_info))
+
+        if path:
+            self.__status_bmp.SetBitmap(self.__bmp_tick)
+            self.__status_txt.SetLabel(u' PATH: %s' % path)
+
+    def error_status(self, msg):
+        # TODO: remove if not needed
+        # self.__bck = wx.NullBitmap, wx.EmptyString
+
+        if self.__error_status_lc and self.__error_status_lc.IsRunning():
+            self.__error_status_lc.Restart()
+        else:
+            self.__bck = self.__status_bmp.GetBitmap(), self.__status_txt.GetLabelText()
+            self.__error_status_lc = wx.CallLater(4399, self.__error_status_cleanup)
+
+        self.__status_bmp.SetBitmap(self.__bmp_error)
+        self.__status_txt.SetLabel(u' ERROR: %s' % msg)
+
+    def __error_status_cleanup(self):
+        # restore previous status
+        self.__status_bmp.SetBitmap(self.__bck[0])
+        self.__status_txt.SetLabel(self.__bck[1])
+
+        self.__error_status_lc.Stop()
+        self.__error_status_lc = None
+
+    def reset(self):
+        if self.__error_status_lc:
+            self.__error_status_lc.Stop()
+            self.__error_status_lc = None
+
+        self.__status_bmp.SetBitmap(wx.NullBitmap)
+        self.__status_txt.SetLabel(wx.EmptyString)
+
+
 class CoverFrame(wx.Frame):
     ID_BUTTON_SAVE = wx.NewId()
     ID_BUTTON_CLEAR = wx.NewId()
@@ -429,8 +638,8 @@ class CoverFrame(wx.Frame):
         self.__bm_status = wx.StaticBitmap(self, wx.ID_ANY, wx.NullBitmap, wx.DefaultPosition, wx.Size(32, 32))
         self.__sizer.Add(self.__bm_status, 0, wx.CENTER | wx.ALL, 5)
 
-        self.__source_sbs = CoverWXStaticBoxSizer(self, u'Source:')
-        self.__sizer.Add(self.__source_sbs, 0, wx.EXPAND)
+        self.__src_sbs = CoverWXStaticBoxSizer(self, u'Source:')
+        self.__sizer.Add(self.__src_sbs, 0, wx.EXPAND)
 
         self.__new_sbs = CoverWXStaticBoxSizer(self, u'Resized:')
         self.__sizer.Add(self.__new_sbs, 0, wx.EXPAND)
@@ -444,21 +653,15 @@ class CoverFrame(wx.Frame):
         box_sizer.Add(self.__sizer, 0, wx.EXPAND | wx.ALL, 5)
         self.SetSizer(box_sizer)
 
-        # TODO: http://xoomer.virgilio.it/infinity77/wxPython/Widgets/wx.StatusBar.html#SetStatusStyles
-        self.__status_bar = self.CreateStatusBar(2)
-        self.__status_bar.SetStatusWidths([40, -1])
+        self.__status_bar = CoverWXStatusBar(self)
+        self.SetStatusBar(self.__status_bar)
 
         self.Layout()
         self.Fit()
 
-        self.__cl = None
-
     def show_new_image(self, image):
-        if self.__cl:
-            self.__cl.Stop()
-
-        self.__source_sbs.set_dimension(image.src_inf['dim'])
-        self.__source_sbs.set_size(image.src_inf['size'])
+        self.__src_sbs.set_dimension(image.src_inf['dim'])
+        self.__src_sbs.set_size(image.src_inf['size'])
 
         self.__new_sbs.set_dimension(image.new_inf['dim'])
         self.__new_sbs.set_size(image.new_inf['size'])
@@ -474,30 +677,17 @@ class CoverFrame(wx.Frame):
         self.Layout()
 
     def __show_notifications(self, image):
-        button_enable = True
-        status_icon = wx.Bitmap('./res/ok22.png', wx.BITMAP_TYPE_PNG)
-
-        if image.path:
-            msg = ' %s (%s)' % (image.path, 'IN USE' if image.path_in_use else 'NEW')
-            self.__update_status(u' Path:', msg)
-        else:
-            self.__update_status(u'WARN:', u' Unknown path!')
-            button_enable = False
-            # status_icon = wx.ArtProvider.GetBitmap(wx.ART_WARNING)
-
-        self.__source_sbs.alert_dimension(image.small)
+        self.__src_sbs.alert_dimension(image.small)
         self.__new_sbs.alert_dimension(image.small)
         self.__new_sbs.alert_size(image.heavy)
 
         if image.small or image.heavy:
-            if image.path_in_use and not image.resized:
-                status_icon = wx.ArtProvider.GetBitmap(wx.ART_ERROR)
-                button_enable = False
-            else:
-                status_icon = wx.ArtProvider.GetBitmap(wx.ART_WARNING)
-
+            status_icon = wx.ArtProvider.GetBitmap(wx.ART_WARNING, wx.ART_TOOLBAR, (32, 32))
+        else:
+            status_icon = wx.Bitmap('./res/ok32.png', wx.BITMAP_TYPE_PNG)
         self.__bm_status.SetBitmap(status_icon)
-        if button_enable:
+
+        if image.actionable:
             self.__button.SetLabel(u'Save')
             self.__button.SetId(self.ID_BUTTON_SAVE)
             self.__button.Enable(True)
@@ -506,68 +696,67 @@ class CoverFrame(wx.Frame):
             self.__button.SetId(wx.ID_ANY)
             self.__button.Enable(False)
 
-        print image.get_action()
-        print image.get_action_2()
+        self.__status_bar.path_status(image)
 
     def update_path(self, image):
         self.__show_notifications(image)
-        self.Refresh()
-        self.Layout()
-
-    def __update_status(self, status, msg):
-        self.__status_bar.SetStatusText(status, 0)
-        self.__status_bar.SetStatusText(msg, 1)
-
-    def __update_path(self, path, in_use=False):
-        if path:
-            msg = ' %s (%s)' % (path, 'IN USE' if in_use else 'NEW')
-            self.__update_status(u' Path:', msg)
-        else:
-            self.__update_status(u'WARN:', u' Unknown path!')
 
     def status_error(self, msg):
-        self.a1 = wx.EmptyString
-        self.a2 = wx.EmptyString
-        self.a3 = wx.NullBitmap
-
-        if self.__cl and self.__cl.IsRunning():
-            self.__cl.Restart()
-        else:
-            self.a1 = self.__status_bar.GetStatusText(0)
-            self.a2 = self.__status_bar.GetStatusText(1)
-            self.a3 = self.__bm_status.GetBitmap()
-            self.__cl = wx.CallLater(4399, self.__status_error_finished)
-
-        self.__bm_status.SetBitmap(wx.ArtProvider.GetBitmap(wx.ART_ERROR))
-        self.__update_status(u' ERR:', ' ' + msg)
-
-    def __status_error_finished(self):
-        self.__bm_status.SetBitmap(self.a3)
-        self.__update_status(self.a1, self.a2)
-        self.__cl.Stop()
-        self.__cl = None
+        self.__status_bar.error_status(msg)
 
     def show_output_image(self, path):
         img = wx.Image(path)
         bmp = wx.BitmapFromImage(img, wx.BITMAP_TYPE_ANY)
         self.__bm_cover.SetBitmap(bmp)
-        size = img.GetSize()
+
+        dimension = img.GetSize().Get()
+        small = dimension < CoverImage.MIN_DIM
+        self.__output_sbs.set_dimension(dimension)
+        self.__output_sbs.alert_dimension(small)
+
+        size = os.path.getsize(path) / 1024
+        heavy = size > COVER_MAX_SIZE
+        self.__output_sbs.set_size(size)
+        self.__output_sbs.alert_size(heavy)
+
+        if small or heavy:
+            status_icon = wx.ArtProvider.GetBitmap(wx.ART_WARNING, wx.ART_TOOLBAR, (32, 32))
+        else:
+            status_icon = wx.Bitmap('./res/ok32.png', wx.BITMAP_TYPE_PNG)
+        self.__bm_status.SetBitmap(status_icon)
 
         self.__button.Enable(True)
         self.__button.SetId(self.ID_BUTTON_CLEAR)
         self.__button.SetLabel(u'Reset')
 
-        self.__output_sbs.set_dimension(size)
-        self.__output_sbs.set_size((os.path.getsize(path) / 1024))
         self.__sizer.Show(self.__output_sbs)
-
-        self.__sizer.Hide(self.__source_sbs)
+        self.__sizer.Hide(self.__src_sbs)
         self.__sizer.Hide(self.__new_sbs)
+
+        self.__status_bar.path_status(path=path)
 
         self.Fit()
         self.Layout()
 
     def reset(self):
+        self.__bm_cover.SetBitmap(wx.NullBitmap)
+        self.__bm_status.SetBitmap(wx.NullBitmap)
+
+        self.__button.Enable(False)
+        self.__button.SetId(wx.ID_ANY)
+        self.__button.SetLabel(wx.EmptyString)
+
+        self.__output_sbs.reset()
+        self.__sizer.Hide(self.__output_sbs)
+
+        self.__src_sbs.reset()
+        self.__sizer.Show(self.__src_sbs)
+
+        self.__new_sbs.reset()
+        self.__sizer.Show(self.__new_sbs)
+
+        self.__status_bar.reset()
+
         self.Layout()
         self.Fit()
 
@@ -582,7 +771,6 @@ class CoverApp(wx.App):
         self.SetTopWindow(self.frame)
         self.frame.Show()
 
-        # bind to drop events
         self.Bind(EVT_COVER_DROP_EVENT, self.__drop_handler)
         self.Bind(wx.EVT_BUTTON, self.__on_button)
 
@@ -628,34 +816,36 @@ class CoverApp(wx.App):
             self.frame.status_error(u'Cannot open image file!')
             return
 
-        self.__cleanup_frame()
+        self.frame.reset()
         assert isinstance(self.image, CoverImage)
         self.frame.show_new_image(self.image)
 
     def __on_dir(self, path):
-        if self.image:
+        if self.image and self.image.actionable:
             self.image.path = path
             self.frame.update_path(self.image)
         else:
-            self.frame.status_error(u'Drop image first!')
+            cover_path = os.path.join(path, CoverImage.DEFAULT_NAME)
+            if os.path.exists(cover_path) and os.path.isfile(cover_path):
+                self.__on_file(cover_path)
+            else:
+                self.frame.status_error(u'Drop image first!')
 
     def __on_url(self, url):
-        # open url connection
-        try:
+        try:  # open url connection
             req = urllib2.urlopen(url)
         except (ValueError, urllib2.URLError), e:
             print e.reason()
             self.frame.status_error(u'urllib2.urlopen exception!')
             return
 
-        # check if we can get length before downloading
-        try:
+        try:  # check if we can get length before downloading
             content_length = int(req.info().getheader(u'Content-Length').strip())
         except AttributeError:
             content_length = 0
         if content_length > IMAGE_DOWNLOAD_LIMIT:
             req.close()
-            self.frame.status_error(u'Content is to big! (>1MB)')
+            self.frame.status_error(u'Content is to big! (>%dMB)' % (IMAGE_DOWNLOAD_LIMIT / (1024 * 1024)))
             return
 
         bar = req.read(11)  # read first 11 bytes, enough to recognize image
@@ -665,11 +855,11 @@ class CoverApp(wx.App):
             self.frame.status_error(u'Unsupported content!')
             return
 
-        bar = bar + req.read(IMAGE_DOWNLOAD_LIMIT - 11)  # download at most 1MB
+        bar = bar + req.read(IMAGE_DOWNLOAD_LIMIT - 11)  # download at most 1MB ? (DOWNLOAD_LIMIT)
         eof = req.read(1)  # check if EOF was reached
         req.close()
         if eof != '':  # if not, then error
-            self.frame.status_error(u'Content is to big! (>1MB)')
+            self.frame.status_error(u'Content is to big! (>%dMB)' % (IMAGE_DOWNLOAD_LIMIT / (1024 * 1024)))
             return
 
         stream = StringIO.StringIO(bar)
@@ -679,45 +869,21 @@ class CoverApp(wx.App):
             self.frame.status_error(u'Cannot open stream!')
             return
 
-        self.__cleanup_frame()
+        self.frame.reset()
         assert isinstance(self.image, CoverImage)
         self.frame.show_new_image(self.image)
 
-    def __cleanup_frame(self):
-        """TODO: cleanup UI, there will be new image"""
-        print 'do clean up ? here ?'
-
     def __on_button(self, evt):
-        print 'evt.GetId(): ', evt.GetId()
-
         if evt.GetId() == CoverFrame.ID_BUTTON_CLEAR:
-            # self.frame.reset()
-            self.image = None
-            pass
-        elif evt.GetId() == CoverFrame.ID_BUTTON_SAVE:
-            # if self.image.small or self.image.heavy:
-            #     if not self.image.path_in_use:
-            #         # if we have source file and it is JPEG file
-            #         if os.path.exists(self.image.src_inf['path']) and self.image.src_inf['format'] == 'JPEG':
-            #             # copy source file to new destination as cover.jpg
-            #             shutil.copy2(self.image.src_inf['path'], self.image.path)
-            #         else:
-            #             self.image.save()
-            # elif self.image.path_in_use:
-            #     directory = os.path.dirname(self.image.path)
-            #     backup = lambda x: os.path.join(directory, 'cover-PyCoverBackup-%02d.jpg' % x)
-            #     for i in range(10):
-            #         if not os.path.exists(os.path.join(directory, backup(i))): break
-            #     shutil.move(self.image.path, backup(i))  # backup original file
-            #     self.image.save()
-            # else:
-            #     self.image.save()
+            # self.image = None
+            self.frame.reset()
 
+        elif evt.GetId() == CoverFrame.ID_BUTTON_SAVE:
+            self.image.execute_actions()
             if self.image.saved:
                 self.frame.show_output_image(self.image.path)
-
-                # elif evt.GetId() == CoverFrame.ID_BUTTON_CLEAR:
-                # print 'CoverFrame.ID_BUTTON_CLEAR'
+            self.image.close()  # = None
+            self.image = None
 
 
 def main():
